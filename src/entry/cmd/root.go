@@ -35,9 +35,12 @@ func init() {
 	rootcmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.config/otela/cfg.yaml)")
 	startCmd.Flags().String("wallet.account", "", "wallet account")
 	startCmd.Flags().String("account.wallet", "", "path to wallet key file")
-	startCmd.Flags().String("bootstrap.addr", "http://152.67.71.5:8092/v1/dnt/bootstraps", "bootstrap address")
+	startCmd.Flags().String("bootstrap.addr", "", "bootstrap address")
 	startCmd.Flags().StringSlice("bootstrap.source", nil, "bootstrap source (HTTP URL, dnsaddr://host, or multiaddr). Repeatable")
-	startCmd.Flags().StringSlice("bootstrap.static", nil, "static bootstrap multiaddr (repeatable)")
+	startCmd.Flags().StringSlice("bootstrap.static", []string{
+		"/ip4/140.238.223.116/tcp/43905/p2p/QmVhz27y8kJQ14EnUyHZpY7aUWKGPPUonstFhuyLYmaXgQ",
+		"/ip4/152.67.64.117/tcp/43905/p2p/QmckWGfEuHFwMhgthJvQGkjZVXFo2SVb7JDHXi3N8QTnp8",
+	}, "static bootstrap multiaddr (repeatable)")
 	startCmd.Flags().String("seed", "0", "Seed")
 	startCmd.Flags().String("mode", "node", "Mode (standalone, local, full)")
 	startCmd.Flags().String("tcpport", "43905", "TCP Port")
