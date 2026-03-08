@@ -9,6 +9,20 @@ import (
 // ReconcileRecords compares head and worker usage records and produces a resolved value
 // disputeThresholdPct is the percentage difference above which records are flagged
 func ReconcileRecords(head, worker *UsageRecord, disputeThresholdPct int) (*ResolvedUsage, error) {
+	// Validate inputs
+	if head == nil {
+		return nil, errors.New("head record cannot be nil")
+	}
+	if worker == nil {
+		return nil, errors.New("worker record cannot be nil")
+	}
+	if head.MetricValue < 0 {
+		return nil, errors.New("head record has negative metric value")
+	}
+	if worker.MetricValue < 0 {
+		return nil, errors.New("worker record has negative metric value")
+	}
+
 	if head.RequestID != worker.RequestID {
 		return nil, errors.New("request IDs do not match")
 	}
