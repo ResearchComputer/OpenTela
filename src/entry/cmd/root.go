@@ -89,6 +89,13 @@ func initConfig(cmd *cobra.Command) error {
 	viper.SetDefault("crdt.tombstone_retention", "24h")
 	viper.SetDefault("crdt.tombstone_compaction_interval", "1h")
 	viper.SetDefault("crdt.tombstone_compaction_batch", 512)
+
+	// Add billing configuration defaults (opt-in, disabled by default)
+	viper.SetDefault("billing.enabled", false)
+	viper.SetDefault("billing.value_threshold", 10000000) // lamports
+	viper.SetDefault("billing.max_interval_minutes", 60)
+	viper.SetDefault("billing.dispute_threshold_pct", 10)
+
 	// Don't forget to read config either from cfgFile or from home directory!
 	if cfgFile != "" {
 		// Use config file from the flag.
