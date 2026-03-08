@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -72,24 +71,6 @@ func (s *StreamAwareResponseWriter) Flush() {
 	if s.flusher != nil {
 		s.flusher.Flush()
 	}
-}
-
-// TrackingResponseWriter wraps the response writer to capture headers for usage tracking
-type TrackingResponseWriter struct {
-	*StreamAwareResponseWriter
-	headersCaptured bool
-}
-
-func (t *TrackingResponseWriter) WriteHeader(statusCode int) {
-	t.StreamAwareResponseWriter.WriteHeader(statusCode)
-	t.headersCaptured = true
-}
-
-func (t *TrackingResponseWriter) Hijack() (c interface{}, rw *bufio.ReadWriter, err error) {
-	if h, ok := t.StreamAwareResponseWriter.ResponseWriter.(http.Hijacker); ok {
-		return h.Hijack()
-	}
-	return nil, nil, fmt.Errorf("response writer does not support hijacking")
 }
 
 // P2P handler for forwarding requests to other peers
