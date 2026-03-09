@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"opentela/internal/common"
 	"opentela/internal/protocol"
+	"opentela/internal/usage"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ import (
 	"github.com/buger/jsonparser"
 	"github.com/gin-gonic/gin"
 	p2phttp "github.com/libp2p/go-libp2p-http"
+	"github.com/spf13/viper"
 )
 
 var (
@@ -234,6 +236,10 @@ func selectCandidates(providers []protocol.Peer, serviceName string, body []byte
 
 // in case of global service, we need to forward the request to the service, identified by the service name and identity group
 func GlobalServiceForwardHandler(c *gin.Context) {
+	// Generate request ID for usage tracking
+	requestID := usage.GenerateRequestID()
+	c.Set("requestId", requestID)
+
 	// Set a longer timeout for AI/ML services
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Minute)
 	defer cancel()
@@ -305,6 +311,18 @@ func GlobalServiceForwardHandler(c *gin.Context) {
 			return err
 		}
 		r.Header.Set("X-Computing-Node", targetPeer)
+
+		// Extract usage metrics from response if billing enabled
+		if viper.GetBool("billing.enabled") {
+			if metrics, err := usage.ExtractUsageMetrics(r); err == nil && len(metrics) > 0 {
+				for metricName, value := range metrics {
+					if err := usage.Track(requestID, serviceName, protocol.MyID, targetPeer, metricName, value); err != nil {
+						common.Logger.Errorf("Tracking usage: %v", err)
+					}
+				}
+			}
+		}
+
 		return nil
 	}
 

@@ -274,3 +274,24 @@ func TestConfigFileVariable(t *testing.T) {
 	// Reset for other tests
 	cfgFile = ""
 }
+
+func TestBillingConfigDefaults(t *testing.T) {
+	// Reset viper state
+	viper.Reset()
+
+	// Create a temporary home directory
+	tempHome := t.TempDir()
+	os.Setenv("HOME", tempHome)
+	defer os.Unsetenv("HOME")
+
+	cfgFile = ""
+	cmd := &cobra.Command{}
+	err := initConfig(cmd)
+	require.NoError(t, err)
+
+	// Test billing configuration defaults
+	assert.Equal(t, false, viper.GetBool("billing.enabled"), "billing.enabled should default to false")
+	assert.Equal(t, 10000000, viper.GetInt("billing.value_threshold"), "billing.value_threshold should default to 10000000")
+	assert.Equal(t, 60, viper.GetInt("billing.max_interval_minutes"), "billing.max_interval_minutes should default to 60")
+	assert.Equal(t, 10, viper.GetInt("billing.dispute_threshold_pct"), "billing.dispute_threshold_pct should default to 10")
+}
