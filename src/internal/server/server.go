@@ -18,14 +18,17 @@ import (
 )
 
 func StartServer() {
-	// owner will be passed to InitializeMyself so every service
-	// registration carries the wallet-derived provider identity.
-	owner := ""
+	// walletPubkey is passed to InitializeMyself so Peer.Owner is always the
+	// raw wallet public key (used for access-control comparisons).
+	// The human-readable ProviderID is derived inside InitializeMyself via wm.
+	walletPubkey := ""
+	var walletManager *wallet.WalletManager
 
 	if viper.GetString("wallet.account") == "" {
 		common.Logger.Info("Wallet account set to 'none', skipping wallet initialization")
 	} else {
-		walletManager, err := wallet.InitializeWallet()
+		var err error
+		walletManager, err = wallet.InitializeWallet()
 		if err != nil {
 			common.Logger.Warn("Failed to initialize wallet: %v", err)
 		} else {
@@ -59,16 +62,14 @@ func StartServer() {
 				common.Logger.Infof("Verified configured wallet.account matches local wallet")
 			}
 
-			// Prefer the provider ID derived from the wallet so every
-			// service registration in the CRDT carries a deterministic,
-			// wallet-bound identity.  Fall back to the raw public key
-			// when the provider ID is empty (legacy OCF accounts).
-			if providerID != "" {
-				owner = providerID
-			} else if configuredAccount != "" {
-				owner = configuredAccount
+			// Owner must always be the wallet public key so that access-control
+			// decisions (which compare against wallet.account) are like-for-like.
+			// The ProviderID ("otela-...") is stored separately in Peer.ProviderID
+			// by InitializeMyself via wm.GetProviderID().
+			if configuredAccount != "" {
+				walletPubkey = configuredAccount
 			} else {
-				owner = walletPublicKey
+				walletPubkey = walletPublicKey
 			}
 
 			if walletType == wallet.WalletTypeSolana {
@@ -100,7 +101,7 @@ func StartServer() {
 		}
 	}
 
-	protocol.InitializeMyself(owner)
+	protocol.InitializeMyself(walletPubkey, walletManager)
 	_, cancelCtx := protocol.GetCRDTStore()
 	defer cancelCtx()
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGKILL)
@@ -110,6 +111,7 @@ func StartServer() {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.Default()
 	r.Use(corsHeader())
+	r.Use(rateLimitMiddleware())
 	r.Use(gin.Recovery())
 	// Initialize OpenAPI/Swagger documentation
 	r.GET("/openapi.yaml", func(c *gin.Context) {
@@ -164,6 +166,7 @@ func StartServer() {
 			globalServiceGroup.DELETE("/:service/*path", GlobalServiceForwardHandler)
 		}
 		serviceGroup := v1.Group("/_service")
+		serviceGroup.Use(accessControlMiddleware())
 		{
 			serviceGroup.GET("/:service/*path", ServiceForwardHandler)
 			serviceGroup.POST("/:service/*path", ServiceForwardHandler)
