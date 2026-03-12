@@ -3,8 +3,9 @@ package protocol
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"opentela/internal/common"
+
 	"opentela/internal/platform"
 	"sync"
 	"time"
@@ -68,29 +69,33 @@ func RegisterLocalServices() {
 			common.Logger.Error("could not health check LLM service: ", err)
 			return
 		}
-		common.Logger.Info("LLM service is healthy")
+		common.Logger.Debug("LLM service healthy")
 		registerLLMService(servicePort)
 	}
 }
 
 func healthCheckRemote(port string, maxTries int) error {
-	err := errors.New("initial error")
-	tries := 0
-	for err != nil {
+	const retryInterval = 10 * time.Second
+	const logEveryN = 10 // log every 10 retries (~100s)
+	start := time.Now()
+
+	for tries := 1; tries <= maxTries; tries++ {
 		_, err := common.RemoteGET("http://localhost:" + port + "/health")
-		if err != nil {
-			common.Logger.Info("could not health check LLM service: ", err, " retrying in 10 seconds...")
-			time.Sleep(10 * time.Second)
-			tries++
-		}
-		if tries > maxTries {
-			return err
-		}
 		if err == nil {
-			break
+			elapsed := time.Since(start).Truncate(time.Second)
+			common.Logger.Infof("Health check passed after %d/%d attempts (%s elapsed)", tries, maxTries, elapsed)
+			return nil
 		}
+
+		if tries == 1 || tries%logEveryN == 0 {
+			elapsed := time.Since(start).Truncate(time.Second)
+			remaining := time.Duration(maxTries-tries) * retryInterval
+			common.Logger.Infof("Health check [%d/%d] elapsed %s, ~%s remaining",
+				tries, maxTries, elapsed, remaining.Truncate(time.Second))
+		}
+		time.Sleep(retryInterval)
 	}
-	return nil
+	return fmt.Errorf("health check failed after %d attempts (%s elapsed)", maxTries, time.Since(start).Truncate(time.Second))
 }
 
 func registerLLMService(port string) {
@@ -98,7 +103,7 @@ func registerLLMService(port string) {
 	if err != nil {
 		common.Logger.Error("could not fetch models from LLM service: ", err)
 	}
-	common.Logger.Info("Fetched models from LLM service: ", string(modelsBytes))
+	common.Logger.Debug("Fetched models from LLM service: ", string(modelsBytes))
 	var availableModels common.LMAvailableModels
 	err = json.Unmarshal(modelsBytes, &availableModels)
 	if err != nil {
@@ -131,7 +136,7 @@ func provideService(service Service) {
 	if viper.GetString("public-addr") != "" {
 		myself.PublicAddress = viper.GetString("public-addr")
 	}
-	common.Logger.Info("Registering LLM service: ", myself)
+	common.Logger.Debug("Registering LLM service: ", myself)
 	value, err := json.Marshal(myself)
 	UpdateNodeTableHook(key, value)
 	common.ReportError(err, "Error while marshalling peer")
@@ -162,6 +167,6 @@ func ReannounceLocalServices() {
 	if err := store.Put(ctx, key, value); err != nil {
 		common.Logger.Warn("Failed to reannounce local services: ", err)
 	} else {
-		common.Logger.Info("Re-announced local services to network")
+		common.Logger.Debug("Re-announced local services")
 	}
 }

@@ -38,9 +38,9 @@ func init() {
 	startCmd.Flags().String("bootstrap.addr", "", "bootstrap address")
 	startCmd.Flags().StringSlice("bootstrap.source", nil, "bootstrap source (HTTP URL, dnsaddr://host, or multiaddr). Repeatable")
 	startCmd.Flags().StringSlice("bootstrap.static", []string{
-		"/ip4/140.238.223.116/tcp/43905/p2p/QmVhz27y8kJQ14EnUyHZpY7aUWKGPPUonstFhuyLYmaXgQ",
-		"/ip4/152.67.64.117/tcp/43905/p2p/QmckWGfEuHFwMhgthJvQGkjZVXFo2SVb7JDHXi3N8QTnp8",
-	}, "static bootstrap multiaddr (repeatable)")
+		"http://140.238.223.116:8092/v1/dnt/bootstraps",
+		"http://152.67.64.117:8092/v1/dnt/bootstraps",
+	}, "static bootstrap sources (HTTP URL, dnsaddr://, or multiaddr). Repeatable")
 	startCmd.Flags().String("seed", "0", "Seed")
 	startCmd.Flags().String("mode", "node", "Mode (standalone, local, full)")
 	startCmd.Flags().String("tcpport", "43905", "TCP Port")
@@ -96,12 +96,21 @@ func initConfig(cmd *cobra.Command) error {
 	viper.SetDefault("billing.max_interval_minutes", 60)
 	viper.SetDefault("billing.dispute_threshold_pct", 10)
 
+	viper.SetDefault("security.require_signed_binary", true)
+
+	// Metrics aggregation configuration (opt-in, disabled by default)
+	viper.SetDefault("metrics.aggregation_enabled", false)
+	viper.SetDefault("metrics.scrape_interval_seconds", 30)
+	viper.SetDefault("metrics.scrape_timeout_seconds", 5)
+	viper.SetDefault("metrics.worker_metrics_path", "/metrics")
+	viper.SetDefault("metrics.max_concurrent_scrapes", 10)
+
 	// Don't forget to read config either from cfgFile or from home directory!
 	if cfgFile != "" {
 		// Use config file from the flag.
 		viper.SetConfigFile(cfgFile)
 		// print out the config file
-		common.Logger.Info("Using config file: ", viper.ConfigFileUsed())
+		common.Logger.Debug("Using config file: ", viper.ConfigFileUsed())
 	} else {
 		// Find home directory.
 		home, err = homedir.Dir()
