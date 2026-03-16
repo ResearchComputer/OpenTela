@@ -620,10 +620,10 @@ func (store *Datastore) handleBlock(ctx context.Context, c cid.Cid) error {
 		return fmt.Errorf("error checking for known block %s: %w", c, err)
 	}
 	if isProcessed {
-		store.logger.Debugf("%s is known. Skip walking tree", c)
 		return nil
 	}
 
+	store.logger.Debugf("handleBlock: processing NEW block %s via handleBranch", c)
 	return store.handleBranch(ctx, c, c)
 }
 
@@ -697,23 +697,40 @@ func (store *Datastore) sendNewJobs(ctx context.Context, session *sync.WaitGroup
 
 	// Special case for root
 	if rootPrio == 0 {
+		fetchStart := time.Now()
 		prio, err := ng.GetPriority(cctx, children[0])
+		fetchDur := time.Since(fetchStart)
 		if err != nil {
+			common.Logger.Debugf("sendNewJobs: root priority fetch failed for %s after %s: %s", children[0], fetchDur, err)
 			return fmt.Errorf("error getting root delta priority: %w", err)
 		}
+		common.Logger.Debugf("sendNewJobs: root priority fetch OK for %s in %s (prio=%d)", children[0], fetchDur, prio)
 		rootPrio = prio
 	}
 
 	goodDeltas := make(map[cid.Cid]struct{})
+
+	const maxChildrenPreview = 5
+	previewChildren := children
+	if len(children) > maxChildrenPreview {
+		previewChildren = children[:maxChildrenPreview]
+	}
+	common.Logger.Debugf(
+		"sendNewJobs: fetching %d children for root=%s rootPrio=%d (showing first %d children): %v",
+		len(children), root, rootPrio, len(previewChildren), previewChildren,
+	)
 
 	var err error
 loop:
 	for deltaOpt := range ng.GetDeltas(cctx, children) {
 		// we abort whenever we a delta comes back in error.
 		if deltaOpt.err != nil {
+			common.Logger.Debugf("sendNewJobs: error fetching delta for root=%s: %v", root, deltaOpt.err)
 			err = fmt.Errorf("error getting delta: %w", deltaOpt.err)
 			break
 		}
+		common.Logger.Debugf("sendNewJobs: got delta for block=%s elems=%d tombs=%d prio=%d",
+			deltaOpt.node.Cid(), len(deltaOpt.delta.GetElements()), len(deltaOpt.delta.GetTombstones()), deltaOpt.delta.GetPriority())
 		goodDeltas[deltaOpt.node.Cid()] = struct{}{}
 
 		session.Add(1)
@@ -864,7 +881,7 @@ func (store *Datastore) processNode(ctx context.Context, ng *crdtNodeGetter, roo
 	for _, l := range links {
 		child := l.Cid
 
-		isHead, _, err := store.heads.IsHead(ctx, child)
+		isHead, existingHeight, err := store.heads.IsHead(ctx, child)
 		if err != nil {
 			return nil, fmt.Errorf("error checking if %s is head: %w", child, err)
 		}
@@ -876,12 +893,27 @@ func (store *Datastore) processNode(ctx context.Context, ng *crdtNodeGetter, roo
 
 		if isHead {
 			// reached one of the current heads. Replace it with
-			// the tip of this branch
-			err := store.heads.Replace(ctx, child, root, rootPrio)
-			if err != nil {
-				return nil, fmt.Errorf("error replacing head: %s->%s: %w", child, root, err)
+			// the tip of this branch, but only if the new height
+			// is at least as high. Never lower the head height —
+			// doing so causes priority regression where later
+			// store.Put() deltas get a lower priority than earlier
+			// ones, causing CRDT setValue() to silently drop them.
+			if rootPrio >= existingHeight {
+				err := store.heads.Replace(ctx, child, root, rootPrio)
+				if err != nil {
+					return nil, fmt.Errorf("error replacing head: %s->%s: %w", child, root, err)
+				}
+				addedAsHead = true
+			} else {
+				// The existing head is at a higher height; keep it
+				// and add the new root as an additional head.
+				if !addedAsHead {
+					if err := store.heads.Add(ctx, root, rootPrio); err != nil {
+						return nil, fmt.Errorf("error adding head: %s: %w", root, err)
+					}
+					addedAsHead = true
+				}
 			}
-			addedAsHead = true
 
 			// If this head was already processed, continue this
 			// protects the case when something is a head but was
