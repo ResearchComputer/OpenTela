@@ -2,8 +2,11 @@ name: ocf-2-head
 seed: "2"
 port: "8092"
 tcpport: "43905"
+wsport: "43906"
+ws_domain: "p2p.opentela.ai"
 udpport: "59820"
 public-addr: "152.67.64.117"
+role: head
 mode: full
 loglevel: debug
 cleanslate: false
@@ -16,5 +19,4 @@ solana:
 
 bootstrap:
   sources:
-    - "/ip4/140.238.223.116/tcp/43905/p2p/QmPneGvHmWMngc8BboFasEJQ7D2aN9C65iMDwgCRGaTazs"  # ocf-1 (seed=1)
-    - "/ip4/129.132.93.93/tcp/18905/p2p/QmV4B8rADS7ygMQ37tSNQnDHX9ujmYEZBEDVSkkxavvxnZ"  # euler relay on eu-login-18
+    - "https://bootstraps.opentela.ai/v1/dnt/bootstraps"

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"opentela/internal/attestation"
 	"opentela/internal/common"
 	"opentela/internal/platform"
@@ -19,6 +20,7 @@ import (
 
 var dntOnce sync.Once
 var myself Peer
+var myselfMu sync.RWMutex
 
 var (
 	scalableNodeTable *nodetable.NodeTable
@@ -108,6 +110,8 @@ func StartSWIM(ctx context.Context) {
 						pd.Role = []string{"worker"}
 					case swim.RoleHead:
 						pd.Role = []string{"head"}
+					case swim.RoleRelay:
+						pd.Role = []string{"relay"}
 					}
 					ne.PeerData = pd
 				}
@@ -170,7 +174,12 @@ type Peer struct {
 	LastSeen          int64               `json:"last_seen"`
 	Version           string              `json:"version"`
 	PublicAddress     string              `json:"public_address"`
+	PublicPort        string              `json:"public_port,omitempty"`
 	Hardware          common.HardwareSpec `json:"hardware"`
+	// RelayPeer is the peer ID of the relay this node has an active
+	// reservation on. Set by workers behind firewalls so head nodes
+	// know which relay to route through.
+	RelayPeer         string              `json:"relay_peer,omitempty"`
 	Connected         bool                `json:"connected"`
 	Load              []int               `json:"load"`
 	// BuildAttestation carries the version + commit + signature so peers
@@ -233,6 +242,7 @@ func UpdateNodeTable(peer Peer) {
 	if viper.GetString("public-addr") != "" {
 		peer.PublicAddress = viper.GetString("public-addr")
 	}
+	peer.PublicPort = viper.GetString("tcpport")
 	value, err := json.Marshal(peer)
 	common.ReportError(err, "Error while marshalling peer")
 	if err := store.Put(ctx, key, value); err != nil {
@@ -241,20 +251,23 @@ func UpdateNodeTable(peer Peer) {
 }
 
 func MarkSelfAsBootstrap() {
-	if viper.GetString("public-addr") != "" {
+	if viper.GetString("public-addr") != "" || viper.GetString("role") == "relay" {
 		common.Logger.Debug("Registering as bootstrap node")
 		ctx := context.Background()
 		store, _ := GetCRDTStore()
 		host, _ := GetP2PNode(nil)
 		key := ds.NewKey(host.ID().String())
 		// Ensure the global `myself` has at least a stable ID before marshalling.
+		myselfMu.Lock()
 		if myself.ID == "" {
 			myself.ID = host.ID().String()
 		}
 		// Use the global myself which carries build attestation.
 		myself.PublicAddress = viper.GetString("public-addr")
+		myself.PublicPort = viper.GetString("tcpport")
 		myself.Connected = true
 		value, err := json.Marshal(myself)
+		myselfMu.Unlock()
 		UpdateNodeTableHook(key, value)
 		common.ReportError(err, "Error while marshalling peer")
 		if err := store.Put(ctx, key, value); err != nil {
@@ -272,11 +285,12 @@ func AnnounceLeave() {
 	common.Logger.Info("Leaving network")
 
 	// Update self status to LEFT
+	myselfMu.Lock()
 	myself.Status = LEFT
 	myself.Connected = false
 	myself.LastSeen = time.Now().Unix()
-
 	value, err := json.Marshal(myself)
+	myselfMu.Unlock()
 	if err != nil {
 		common.Logger.Error("Error while marshalling peer for leave: ", err)
 		return
@@ -304,7 +318,8 @@ func UpdateNodeTableHook(key ds.Key, value []byte) {
 	}
 
 	// If enforcement is on, reject peers without a valid signed build.
-	if viper.GetBool("security.require_signed_binary") && !peer.SignedBuild {
+	// Always trust ourselves — a node should never reject its own entry.
+	if viper.GetBool("security.require_signed_binary") && !peer.SignedBuild && peer.ID != MyID {
 		common.Logger.Warnf("Rejecting peer [%s]: no valid build attestation (security.require_signed_binary=true)", peer.ID)
 		return
 	}
@@ -426,11 +441,13 @@ func GetAllProviders(serviceName string) ([]Peer, error) {
 	tableUpdateSem <- struct{}{}
 	defer func() { <-tableUpdateSem }() // Release on exit
 	for _, peer := range table {
-		if peer.Connected {
-			for _, service := range peer.Service {
-				if service.Name == serviceName {
-					providers = append(providers, peer)
-				}
+		// Include all peers with matching services, not just directly
+		// connected ones. Workers behind relays appear as disconnected
+		// but are reachable via relay-hop routing.
+		for _, service := range peer.Service {
+			if service.Name == serviceName {
+				providers = append(providers, peer)
+				break
 			}
 		}
 	}
@@ -451,6 +468,7 @@ func InitializeMyself(walletPubkeyOverride string, wm *wallet.WalletManager) {
 	ctx := context.Background()
 	store, _ := GetCRDTStore()
 	key := ds.NewKey(host.ID().String())
+	myselfMu.Lock()
 	myself = Peer{
 		ID:            host.ID().String(),
 		PublicAddress: viper.GetString("public-addr"),
@@ -510,10 +528,62 @@ func InitializeMyself(walletPubkeyOverride string, wm *wallet.WalletManager) {
 	}
 
 	myself.Hardware.GPUs = platform.GetGPUInfo()
+
+	// Set role from config.
+	if role := viper.GetString("role"); role != "" {
+		myself.Role = []string{role}
+	}
+
+	// All nodes carry their own port so ConnectedBootstraps builds correct multiaddrs.
+	myself.PublicPort = viper.GetString("tcpport")
+
+	// Warn if relay has no public address — it won't be discoverable as a bootstrap.
+	if viper.GetString("role") == "relay" && myself.PublicAddress == "" {
+		common.Logger.Warn("Relay node has no public-addr set; it won't be discoverable as a bootstrap")
+	}
+
 	value, err := json.Marshal(myself)
+	myselfMu.Unlock()
 	common.ReportError(err, "Error while marshalling peer")
 	err = store.Put(ctx, key, value)
 	if err != nil {
 		common.Logger.Error("Error while initializing myself in the node table: ", err)
 	}
+}
+
+// GetSelf returns a copy of this node's own Peer record.
+func GetSelf() Peer {
+	myselfMu.RLock()
+	defer myselfMu.RUnlock()
+	return myself
+}
+
+// SetMyselfRelayPeer atomically updates the RelayPeer field on myself.
+func SetMyselfRelayPeer(relayPeer string) {
+	myselfMu.Lock()
+	defer myselfMu.Unlock()
+	myself.RelayPeer = relayPeer
+}
+
+// SetMyselfForTest sets the myself var for testing. Test-only.
+func SetMyselfForTest(p Peer) {
+	myselfMu.Lock()
+	defer myselfMu.Unlock()
+	myself = p
+}
+
+// RegisterRemotePeer writes a remote peer's entry to the CRDT store.
+// Used by the HTTP registration endpoint to insert relay addresses.
+func RegisterRemotePeer(p Peer) error {
+	ctx := context.Background()
+	store, _ := GetCRDTStore()
+	key := ds.NewKey(p.ID)
+	p.Connected = false
+	p.LastSeen = time.Now().Unix()
+	value, err := json.Marshal(p)
+	if err != nil {
+		return fmt.Errorf("marshal remote peer: %w", err)
+	}
+	UpdateNodeTableHook(key, value)
+	return store.Put(ctx, key, value)
 }

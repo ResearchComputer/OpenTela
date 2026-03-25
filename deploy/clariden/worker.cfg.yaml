@@ -1,15 +1,15 @@
-name: ocf-1-head
-seed: "1"
+name: clariden-worker
+seed: "200"
 port: "8092"
 tcpport: "43905"
-wsport: "43906"
-ws_domain: "p2p.opentela.ai"
 udpport: "59820"
-public-addr: "140.238.223.116"
-role: head
 mode: full
 loglevel: debug
-cleanslate: false
+cleanslate: true
+
+service:
+  name: llm
+  port: "30000"
 
 security:
   require_signed_binary: false

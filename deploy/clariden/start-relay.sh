@@ -1,17 +1,17 @@
 #!/bin/bash
-# Start the OpenTela relay node on Euler login node
+# Start the OpenTela relay node on Clariden login node (clariden-ln003)
 set -euo pipefail
 
 REAL_HOME="$HOME"
 RELAY_HOME="/tmp/opentela-relay"
 CONFIG="$REAL_HOME/opentela/relay.cfg.yaml"
 LOGFILE="$REAL_HOME/opentela/relay.log"
-BINARY="$REAL_HOME/opentela/entry"
+BINARY="$REAL_HOME/opentela/otela"
 RELAY_PORT=18092
 TCP_PORT=18905
 BOOTSTRAP_URL="https://bootstraps.opentela.ai"
 
-pkill -f "opentela/entry" 2>/dev/null || true
+pkill -f "opentela/otela.*relay" 2>/dev/null || true
 sleep 1
 
 # Detect the primary IP of this login node.
@@ -21,14 +21,14 @@ echo "Detected login node IP: $NODE_IP ($(hostname))"
 # Patch public-addr in config to match this node's actual IP
 sed -i "s/^public-addr:.*/public-addr: \"${NODE_IP}\"/" "$CONFIG"
 
-# Use local /tmp for BadgerDB to avoid Lustre stale file handles
+# Use /tmp for BadgerDB to avoid filesystem issues
 rm -rf "$RELAY_HOME"
 mkdir -p "$RELAY_HOME"
 
 # Start relay with HOME overridden to /tmp
 nohup env HOME="$RELAY_HOME" "$BINARY" start --config "$CONFIG" > "$LOGFILE" 2>&1 &
 RELAY_PID=$!
-echo "Relay started with PID=$RELAY_PID (data dir: $RELAY_HOME/.ocfcore)"
+echo "Relay started with PID=$RELAY_PID (data dir: $RELAY_HOME)"
 
 # Wait for relay to be healthy
 echo "Waiting for relay to be ready..."

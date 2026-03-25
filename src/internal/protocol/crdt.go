@@ -15,6 +15,7 @@ import (
 	ds "github.com/ipfs/go-datastore"
 	badger "github.com/ipfs/go-ds-badger"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/spf13/viper"
 )
@@ -45,13 +46,23 @@ func GetCRDTStore() (*crdt.Datastore, context.CancelFunc) {
 			pubsubParams.D = viper.GetInt("crdt.tuned_gossipsub_d")     // default 10
 			pubsubParams.Dlo = viper.GetInt("crdt.tuned_gossipsub_dlo") // default 4
 			pubsubParams.Dhi = viper.GetInt("crdt.tuned_gossipsub_dhi") // default 16
-		} else {
-			pubsubParams.D = 128
-			pubsubParams.Dlo = 16
-			pubsubParams.Dhi = 256
 		}
+		// Default GossipSub params (D=6, Dlo=4, Dhi=12) work well for
+		// networks of any size.
 		psub, err := pubsub.NewGossipSub(ctx, host, pubsub.WithGossipSubParams(pubsubParams))
 		common.ReportError(err, "Error while creating pubsub")
+
+		// Bootstrap BEFORE joining the CRDT pubsub topic. GossipSub
+		// exchanges topic subscriptions with already-connected peers.
+		// If we join the topic before peers are connected, the relay
+		// won't see cloud nodes as CRDT topic subscribers, causing
+		// unidirectional mesh and CRDT data not propagating.
+		addsInfo, err := peer.AddrInfosFromP2pAddrs(getDefaultBootstrapPeers(nil, mode)...)
+		common.ReportError(err, "Error while getting bootstrap peers")
+		ipfs.Bootstrap(addsInfo)
+		// Give bootstrap connections time to establish before joining
+		// topics, so GossipSub sees the peers immediately.
+		time.Sleep(3 * time.Second)
 
 		topic, err := psub.Join(pubsubNet)
 		common.ReportError(err, "Error while joining pubsub topic")
@@ -70,12 +81,18 @@ func GetCRDTStore() (*crdt.Datastore, context.CancelFunc) {
 				// Use message author (original publisher), not ReceivedFrom
 				// (forwarding peer). In relay topologies GetFrom() is the worker.
 				authorID := msg.GetFrom()
-				// Only update peers already in the table — new peers are
-				// added via the CRDT PutHook which carries the full record
-				// (including build attestation).
 				p, gerr := GetPeerFromTable(authorID.String())
 				if gerr != nil {
-					common.Logger.Debugf("Ignoring msg from unknown peer [%s]; waiting for CRDT sync", authorID.String())
+					// Peer not yet in table. Create a minimal entry so it is
+					// tracked immediately. The full record (with build attestation)
+					// will overwrite this when the CRDT PutHook fires.
+					if host.Network().Connectedness(authorID) == network.Connected {
+						common.Logger.Debugf("Adding minimal entry for new peer [%s] from gossip", authorID.String())
+						p = Peer{ID: authorID.String(), Connected: true, LastSeen: time.Now().Unix()}
+						if b, merr := json.Marshal(p); merr == nil {
+							UpdateNodeTableHook(ds.NewKey(authorID.String()), b)
+						}
+					}
 					continue
 				}
 				common.Logger.Debugf("Updating peer: [%s] triggered by msg received", authorID.String())
@@ -119,7 +136,7 @@ func GetCRDTStore() (*crdt.Datastore, context.CancelFunc) {
 			var peer Peer
 			err := json.Unmarshal(v, &peer)
 			common.ReportError(err, "Error while unmarshalling peer")
-			// When a new peer is added to the table it is marked as diconnected by default.
+			// When a new peer is added to the table it is marked as disconnected by default.
 			// Doing so allows to intercept ghost peers by the verification procedure.
 
 			// Do not update itself
@@ -150,23 +167,13 @@ func GetCRDTStore() (*crdt.Datastore, context.CancelFunc) {
 		crdtStore, err = crdt.New(store, ds.NewKey(pubsubKey), ipfs, pubsubBC, opts)
 		common.ReportError(err, "Error while creating crdt store")
 
-		// Close any pre-existing connections so that when we re-bootstrap,
-		// bitswap's notification handler (registered inside crdt.New → bitswap.New)
-		// will fire and learn about the peers.
-		for _, p := range host.Network().Peers() {
-			if p == host.ID() {
-				continue
-			}
-			_ = host.Network().ClosePeer(p)
-		}
-
-		addsInfo, err := peer.AddrInfosFromP2pAddrs(getDefaultBootstrapPeers(nil, mode)...)
-		common.ReportError(err, "Error while getting bootstrap peers")
-		ipfs.Bootstrap(addsInfo)
-		common.ReportError(err, "Error while starting ticker")
-
-		// Now start auto-reconnect — bitswap is ready to receive connection events.
 		StartAutoReconnect(ctx)
+
+		// Workers: reserve relay slots so head nodes can reach us via circuit.
+		go func() {
+			time.Sleep(10 * time.Second)
+			MakeRelayReservations()
+		}()
 
 		startTombstoneCompactor(crdtStore)
 	})
@@ -182,6 +189,11 @@ func Reconnect() {
 	addsInfo, err := peer.AddrInfosFromP2pAddrs(getDefaultBootstrapPeers(nil, mode)...)
 	common.ReportError(err, "Error while getting bootstrap peers")
 	ipfs.Bootstrap(addsInfo)
+	// Re-establish relay reservations after reconnecting.
+	go func() {
+		time.Sleep(5 * time.Second)
+		MakeRelayReservations()
+	}()
 }
 
 func ClearCRDTStore() {

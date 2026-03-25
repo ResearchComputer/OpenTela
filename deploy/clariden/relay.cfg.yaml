@@ -1,15 +1,12 @@
-name: ocf-1-head
-seed: "1"
-port: "8092"
-tcpport: "43905"
-wsport: "43906"
-ws_domain: "p2p.opentela.ai"
-udpport: "59820"
-public-addr: "140.238.223.116"
-role: head
+name: clariden-relay
+seed: "199"
+port: "18092"
+tcpport: "18905"
+udpport: "18820"
 mode: full
 loglevel: debug
-cleanslate: false
+cleanslate: true
+role: relay
 
 security:
   require_signed_binary: false

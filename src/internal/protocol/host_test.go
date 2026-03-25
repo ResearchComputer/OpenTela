@@ -98,3 +98,144 @@ func TestWaitFor_ZeroDuration(t *testing.T) {
 	result := waitFor(ctx, 0)
 	assert.True(t, result, "waitFor with zero duration should return true immediately")
 }
+
+// setNodeTableEntry injects a peer directly into the node table for testing.
+func setNodeTableEntry(key string, p Peer) {
+	table := getNodeTable()
+	tableUpdateSem <- struct{}{}
+	defer func() { <-tableUpdateSem }()
+	(*table)[key] = p
+}
+
+func TestIsRecentRelayPeer_IncludesRecentRelay(t *testing.T) {
+	p := Peer{
+		Role:     []string{"relay"},
+		LastSeen: time.Now().Unix(),
+	}
+	assert.True(t, isRecentRelayPeer(p), "relay seen just now should be considered recent")
+}
+
+func TestIsRecentRelayPeer_ExcludesStaleRelay(t *testing.T) {
+	p := Peer{
+		Role:     []string{"relay"},
+		LastSeen: time.Now().Unix() - 700, // 11+ minutes ago
+	}
+	assert.False(t, isRecentRelayPeer(p), "relay seen 11+ minutes ago should not be considered recent")
+}
+
+func TestIsRecentRelayPeer_NonRelayIgnored(t *testing.T) {
+	p := Peer{
+		Role:     []string{"worker"},
+		LastSeen: time.Now().Unix(),
+	}
+	assert.False(t, isRecentRelayPeer(p), "non-relay peer should never be considered a recent relay")
+}
+
+func TestIsRecentRelayPeer_ExactlyAtBoundary(t *testing.T) {
+	// A relay seen exactly maxBootstrapAge seconds ago is NOT recent (boundary exclusive).
+	p := Peer{
+		Role:     []string{"relay"},
+		LastSeen: time.Now().Unix() - maxBootstrapAge,
+	}
+	assert.False(t, isRecentRelayPeer(p), "relay seen exactly at boundary should not be recent")
+}
+
+func TestConnectedBootstraps_IncludesRecentRelay(t *testing.T) {
+	// A real peer ID from a test key (Ed25519, deterministic).
+	// Using a well-known test peer ID string for the node-table lookup path.
+	// We test only the node-table filter; we don't need a live P2P host.
+	// Instead we verify via setNodeTableEntry + GetAllPeers that the relay
+	// would pass the isRecentRelayPeer filter.
+	peerID := "12D3KooWGDMwwqrpcYUs7FEF2WsMj7nG5dkTkrqMNguLGNipFKE3"
+	p := Peer{
+		ID:            peerID,
+		PublicAddress: "1.2.3.4",
+		PublicPort:    "9000",
+		Role:          []string{"relay"},
+		LastSeen:      time.Now().Unix(),
+		Connected:     false,
+	}
+	setNodeTableEntry(peerID, p)
+	defer func() {
+		table := getNodeTable()
+		tableUpdateSem <- struct{}{}
+		delete(*table, peerID)
+		<-tableUpdateSem
+	}()
+
+	// Confirm the relay peer is present and passes the recent-relay check.
+	peers := GetAllPeers()
+	found := false
+	for _, peer := range *peers {
+		if peer.ID == peerID {
+			assert.True(t, isRecentRelayPeer(peer), "injected relay should be considered recent")
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "injected relay peer should be present in node table")
+}
+
+func TestConnectedBootstraps_ExcludesStaleRelay(t *testing.T) {
+	peerID := "12D3KooWHHzSeKaY8xuZVzkLbKFfCddgzQVjAd8jyS37UDiHiKLV"
+	p := Peer{
+		ID:            peerID,
+		PublicAddress: "5.6.7.8",
+		PublicPort:    "9001",
+		Role:          []string{"relay"},
+		LastSeen:      time.Now().Unix() - 700, // 11+ minutes ago
+		Connected:     false,
+	}
+	setNodeTableEntry(peerID, p)
+	defer func() {
+		table := getNodeTable()
+		tableUpdateSem <- struct{}{}
+		delete(*table, peerID)
+		<-tableUpdateSem
+	}()
+
+	peers := GetAllPeers()
+	for _, peer := range *peers {
+		if peer.ID == peerID {
+			assert.False(t, isRecentRelayPeer(peer), "stale relay should not be considered recent")
+			return
+		}
+	}
+	// If not found in table, the test still passes (peer was cleaned up).
+}
+
+func TestBuildBootstrapAddr(t *testing.T) {
+	tests := []struct {
+		name         string
+		publicAddr   string
+		publicPort   string
+		fallbackPort string
+		peerID       string
+		want         string
+	}{
+		{
+			name:         "uses peer port",
+			publicAddr:   "1.2.3.4",
+			publicPort:   "18905",
+			fallbackPort: "43905",
+			peerID:       "QmTest123",
+			want:         "/ip4/1.2.3.4/tcp/18905/p2p/QmTest123",
+		},
+		{
+			name:         "falls back when port empty",
+			publicAddr:   "5.6.7.8",
+			publicPort:   "",
+			fallbackPort: "43905",
+			peerID:       "QmTest456",
+			want:         "/ip4/5.6.7.8/tcp/43905/p2p/QmTest456",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := BuildBootstrapAddr(tt.publicAddr, tt.publicPort, tt.fallbackPort, tt.peerID)
+			if got != tt.want {
+				t.Errorf("BuildBootstrapAddr() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

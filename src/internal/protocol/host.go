@@ -22,6 +22,8 @@ import (
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	dualdht "github.com/libp2p/go-libp2p-kad-dht/dual"
 	record "github.com/libp2p/go-libp2p-record"
+	relayClient "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/client"
+
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -109,6 +111,20 @@ func newHost(ctx context.Context, seed int64, ds datastore.Batching) (host.Host,
 	// 	panic(err)
 	// }
 
+	listenAddrs := []string{
+		"/ip4/0.0.0.0/tcp/" + viper.GetString("tcpport"),
+		"/ip4/0.0.0.0/udp/" + viper.GetString("udpport") + "/quic",
+	}
+	// Dedicated WebSocket port for Cloudflare-proxied connections.
+	// If wsport is set, listen on a separate port for WS traffic.
+	// Otherwise, WS shares the TCP port (may not work with all proxies).
+	if wsPort := viper.GetString("wsport"); wsPort != "" {
+		listenAddrs = append(listenAddrs, "/ip4/0.0.0.0/tcp/"+wsPort+"/ws")
+		common.Logger.Infof("WebSocket listener on port %s", wsPort)
+	} else {
+		listenAddrs = append(listenAddrs, "/ip4/0.0.0.0/tcp/"+viper.GetString("tcpport")+"/ws")
+	}
+
 	opts := []libp2p.Option{
 		libp2p.DefaultTransports,
 		libp2p.Identity(priv),
@@ -116,11 +132,7 @@ func newHost(ctx context.Context, seed int64, ds datastore.Batching) (host.Host,
 		libp2p.ResourceManager(newResourceManager()),
 		// libp2p.ConnectionManager(connmgr),
 		libp2p.NATPortMap(),
-		libp2p.ListenAddrStrings(
-			"/ip4/0.0.0.0/tcp/"+viper.GetString("tcpport"),
-			"/ip4/0.0.0.0/tcp/"+viper.GetString("tcpport")+"/ws",
-			"/ip4/0.0.0.0/udp/"+viper.GetString("udpport")+"/quic",
-		),
+		libp2p.ListenAddrStrings(listenAddrs...),
 		libp2p.Security(libp2ptls.ID, libp2ptls.New),
 		libp2p.Security(noise.ID, noise.New),
 		libp2p.EnableNATService(),
@@ -128,17 +140,58 @@ func newHost(ctx context.Context, seed int64, ds datastore.Batching) (host.Host,
 		libp2p.EnableHolePunching(),
 		libp2p.EnableAutoNATv2(),
 		libp2p.EnableRelayService(),
-		libp2p.ForceReachabilityPublic(),
 		libp2p.Routing(func(h host.Host) (routing.PeerRouting, error) {
 			ddht, err = newDHT(ctx, h, ds)
 			return ddht, err
 		}),
 	}
 
+	// hostRef is set after host creation so the autorelay peer source
+	// callback can access the host. We use a pointer-to-pointer because
+	// the callback closure captures hostRef, and we set *hostRef later.
+	var hostRef *host.Host
+	if viper.GetString("public-addr") != "" {
+		// Head/relay nodes with a known public address: force public
+		// reachability so they don't waste time with AutoNAT probes.
+		opts = append(opts, libp2p.ForceReachabilityPublic())
+	} else {
+		// Workers (no public-addr): force private reachability so libp2p
+		// automatically reserves slots on relay servers. Without this,
+		// AutoNAT may incorrectly report "public" (the relay CAN reach
+		// the worker directly) even though the worker is unreachable from
+		// the cloud.
+		opts = append(opts, libp2p.ForceReachabilityPrivate())
+		// AutoRelay discovers relay servers from connected peers and
+		// maintains active reservations so other nodes can reach us
+		// via /p2p/<relay>/p2p-circuit/p2p/<us>.
+		opts = append(opts, libp2p.EnableAutoRelayWithPeerSource(
+			func(ctx context.Context, numPeers int) <-chan peer.AddrInfo {
+				ch := make(chan peer.AddrInfo, numPeers)
+				go func() {
+					defer close(ch)
+					if hostRef == nil {
+						return
+					}
+					h := *hostRef
+					for _, p := range h.Network().Peers() {
+						select {
+						case ch <- peer.AddrInfo{ID: p, Addrs: h.Peerstore().Addrs(p)}:
+						case <-ctx.Done():
+							return
+						}
+					}
+				}()
+				return ch
+			},
+		))
+	}
+
 	host, err := libp2p.New(opts...)
 	if err != nil {
 		return nil, err
 	}
+	// Set hostRef so the autorelay peer source callback can access the host.
+	hostRef = &host
 
 	// Log connection events for debugging
 	host.Network().Notify(&network.NotifyBundle{
@@ -152,19 +205,22 @@ func newHost(ctx context.Context, seed int64, ds datastore.Batching) (host.Host,
 			// On (re)connections, re-announce local services
 			go ReannounceLocalServices()
 
-			// Mark peer as connected in node table — only update existing peers.
-			// New peers are added via the CRDT PutHook which carries the full
-			// record (including build attestation).
+			// Mark peer as connected in node table.
+			// If the peer is unknown, create a minimal entry so it is tracked
+			// immediately. The full record (with build attestation) will
+			// overwrite this when the CRDT PutHook fires.
 			go func(pid peer.ID) {
 				if pid == host.ID() {
 					return
 				}
 				p, err := GetPeerFromTable(pid.String())
 				if err != nil {
-					common.Logger.Debugf("Ignoring connect for unknown peer [%s]; waiting for CRDT sync", pid.String())
-					return
+					// Peer not yet in table — create a minimal entry.
+					common.Logger.Debugf("Adding minimal entry for new peer [%s] on connect", pid.String())
+					p = Peer{ID: pid.String()}
+				} else {
+					common.Logger.Debugf("Updating peer [%s] on connect", pid.String())
 				}
-				common.Logger.Debugf("Updating peer [%s] on connect", pid.String())
 				p.Connected = true
 				p.LastSeen = time.Now().Unix()
 				if b, e := json.Marshal(p); e == nil {
@@ -445,21 +501,157 @@ func AllPeers() []*PeerWithStatus {
 	return pinfos
 }
 
+// BuildBootstrapAddr constructs a multiaddr string for a bootstrap peer.
+// If publicPort is empty, fallbackPort is used (for un-upgraded peers).
+func BuildBootstrapAddr(publicAddr, publicPort, fallbackPort, peerID string) string {
+	port := publicPort
+	if port == "" {
+		port = fallbackPort
+	}
+	return "/ip4/" + publicAddr + "/tcp/" + port + "/p2p/" + peerID
+}
+
+const maxBootstrapAge int64 = 10 * 60 // 10 minutes
+
+// isRecentRelayPeer returns true when p has the "relay" role and was seen
+// within maxBootstrapAge seconds of now.  Extracted for unit-testability.
+func isRecentRelayPeer(p Peer) bool {
+	for _, r := range p.Role {
+		if r == "relay" {
+			return (time.Now().Unix() - p.LastSeen) < maxBootstrapAge
+		}
+	}
+	return false
+}
+
 func ConnectedBootstraps() []string {
 	var bootstraps = []string{}
 	dnt := GetAllPeers()
 	host, _ := GetP2PNode(nil)
+	fallbackPort := viper.GetString("tcpport")
+	wsDomain := viper.GetString("ws_domain") // e.g., "p2p.opentela.ai"
 	for _, p := range *dnt {
 		if p.PublicAddress != "" {
-			common.Logger.Debugf("Peer %s addr=%s connectedness=%s", p.ID, p.PublicAddress, host.Network().Connectedness(peer.ID(p.ID)))
-			if host.Network().Connectedness(peer.ID(p.ID)) == network.Connected || host.ID().String() == p.ID {
-				bootstrapAddr := "/ip4/" + p.PublicAddress + "/tcp/" + viper.GetString("tcpport") + "/p2p/" + p.ID
+			pid, err := peer.Decode(p.ID)
+			if err != nil {
+				common.Logger.Debugf("Skipping peer %s: invalid peer ID: %v", p.ID, err)
+				continue
+			}
+			connected := host.Network().Connectedness(pid) == network.Connected
+			isSelf := host.ID() == pid
+			isRecentRelay := isRecentRelayPeer(p)
+			common.Logger.Debugf("Peer %s addr=%s port=%s connected=%v self=%v recentRelay=%v", p.ID, p.PublicAddress, p.PublicPort, connected, isSelf, isRecentRelay)
+			if connected || isSelf || isRecentRelay {
+				bootstrapAddr := BuildBootstrapAddr(p.PublicAddress, p.PublicPort, fallbackPort, p.ID)
 				bootstraps = append(bootstraps, bootstrapAddr)
+				// Also advertise WSS multiaddr via Cloudflare domain so
+				// firewall-restricted nodes (e.g., JSC) can connect on port 443.
+				// Emitted for all peers with a public address — Cloudflare
+				// round-robins, so some attempts may hit the wrong origin
+				// (peer ID mismatch), but libp2p retries and succeeds.
+				if wsDomain != "" {
+					wssAddr := "/dns4/" + wsDomain + "/tcp/443/wss/p2p/" + p.ID
+					bootstraps = append(bootstraps, wssAddr)
+				}
 			}
 		}
 	}
 	bootstraps = common.DeduplicateStrings(bootstraps)
 	return bootstraps
+}
+
+// MakeRelayReservations reserves a slot on every connected peer's relay
+// service. This is required for relay v2: without a reservation, other peers
+// cannot connect to us through the relay (they get NO_RESERVATION).
+// Only runs for workers (nodes without public-addr).
+func MakeRelayReservations() {
+	if viper.GetString("public-addr") != "" {
+		return // head/relay nodes don't need relay reservations
+	}
+	h, _ := GetP2PNode(nil)
+	if h == nil {
+		common.Logger.Debug("MakeRelayReservations: host not ready, skipping")
+		return
+	}
+	var reservedRelay string
+	for _, p := range h.Network().Peers() {
+		if p == h.ID() {
+			continue
+		}
+		ai := peer.AddrInfo{ID: p, Addrs: h.Peerstore().Addrs(p)}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_, err := relayClient.Reserve(ctx, h, ai)
+		cancel()
+		if err != nil {
+			common.Logger.Debugf("Relay reservation on %s failed: %v", p.String()[:12], err)
+		} else {
+			common.Logger.Infof("Relay reservation on %s succeeded", p.String()[:12])
+			if reservedRelay == "" {
+				reservedRelay = p.String()
+			}
+		}
+	}
+	// Store the relay peer ID in our own CRDT entry so head nodes
+	// know which relay to route through to reach us.
+	if reservedRelay != "" && GetSelf().RelayPeer != reservedRelay {
+		SetMyselfRelayPeer(reservedRelay)
+		ReannounceLocalServices()
+		common.Logger.Infof("Registered relay peer %s in CRDT", reservedRelay[:12])
+	}
+}
+
+// IsDirectlyConnected returns true if we have a direct libp2p connection
+// to the given peer (not via relay circuit).
+func IsDirectlyConnected(targetPeerID string) bool {
+	h, _ := GetP2PNode(nil)
+	if h == nil {
+		return false
+	}
+	pid, err := peer.Decode(targetPeerID)
+	if err != nil {
+		return false
+	}
+	return h.Network().Connectedness(pid) == network.Connected
+}
+
+// FindRelayFor returns the peer ID of a connected peer that can relay
+// requests to the target worker. It checks the worker's RelayPeer field
+// first (the worker advertises which relay it reserved a slot on), then
+// falls back to any connected relay-role peer.
+func FindRelayFor(targetPeerID string) string {
+	h, _ := GetP2PNode(nil)
+	if h == nil {
+		return ""
+	}
+
+	// Best option: the worker advertised its relay in the CRDT.
+	if targetInfo, err := GetPeerFromTable(targetPeerID); err == nil && targetInfo.RelayPeer != "" {
+		relayPID, err := peer.Decode(targetInfo.RelayPeer)
+		if err == nil && h.Network().Connectedness(relayPID) == network.Connected {
+			common.Logger.Debugf("Using worker's advertised relay %s", targetInfo.RelayPeer[:12])
+			return targetInfo.RelayPeer
+		}
+	}
+
+	// Fallback: any connected peer with relay or head role that is also
+	// connected to the target (i.e. can forward on our behalf).
+	targetPID, err := peer.Decode(targetPeerID)
+	if err != nil {
+		return ""
+	}
+	for _, p := range h.Network().Peers() {
+		if p == targetPID || p == h.ID() {
+			continue
+		}
+		if peerInfo, err := GetPeerFromTable(p.String()); err == nil {
+			for _, r := range peerInfo.Role {
+				if r == "relay" || r == "head" {
+					return p.String()
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // GetResourceManagerStats returns current resource usage statistics

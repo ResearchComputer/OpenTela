@@ -11,8 +11,7 @@ import (
 
 	ds "github.com/ipfs/go-datastore"
 	"github.com/jasonlvhit/gocron"
-	"github.com/libp2p/go-libp2p/core/network"
-	libpeer "github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/p2p/protocol/ping"
 )
 
 // var verificationKey = "ocf-verification-key"
@@ -28,98 +27,98 @@ func StartTicker() {
 	err = gocron.Every(30).Second().Do(func() {
 		host, _ := GetP2PNode(nil)
 		peers := host.Peerstore().Peers()
-		// updateMyself()
-		var reconnected = 0
+		var alive = 0
 		var disconnected = 0
 		for _, peer_id := range peers {
-			// check if peer is still connected
-			p, error := GetPeerFromTable(peer_id.String())
-			if error == nil {
-				if host.Network().Connectedness(peer_id) == network.Connected {
-					p.Connected = true
-				} else if peer_id != host.ID() && host.Network().Connectedness(peer_id) != network.Connected {
-					// try to dial the peer, if cannot dial, then mark it as disconnected
-					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-					addrInfo := libpeer.AddrInfo{ID: peer_id, Addrs: host.Peerstore().Addrs(peer_id)}
-					if len(addrInfo.Addrs) == 0 {
-						// No known addresses — peer may only be mesh-reachable
-						// via relay. Preserve Connected set by PubSub handler.
-						cancel()
-						continue
-					} else if err := host.Connect(ctx, addrInfo); err != nil {
-						common.Logger.With("err", err).Warnf("Failed to dial peer %s; marking disconnected", peer_id)
-						p.Connected = false
-						disconnected++
-					} else {
-						// Successfully reconnected
-						common.Logger.Debugf("Reconnected to peer %s", peer_id)
-						p.Connected = true
-						reconnected++
-					}
-					cancel() // release context immediately after the dial attempt, not deferred to function return
+			if peer_id == host.ID() {
+				continue
+			}
+			p, err := GetPeerFromTable(peer_id.String())
+			if err != nil {
+				continue
+			}
+			// Active liveness check: ping the peer through whatever
+			// transport is available (direct or relay circuit).
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ch := ping.Ping(ctx, host, peer_id)
+			var reachable bool
+			select {
+			case res, ok := <-ch:
+				reachable = ok && res.Error == nil
+				if !reachable && ok && res.Error != nil {
+					common.Logger.Debugf("Ping failed for peer %s: %v", peer_id, res.Error)
 				}
-				// update last seen timestamp
-				p.LastSeen = time.Now().Unix()
-				value, err := json.Marshal(p)
-				if err == nil {
-					UpdateNodeTableHook(ds.NewKey(peer_id.String()), value)
-				} else {
-					common.Logger.Error("Error while marshalling peer: ", peer_id.String(), err)
-				}
+			case <-ctx.Done():
+			}
+			cancel()
+			if !reachable {
+				p.Connected = false
+				disconnected++
+			} else {
+				p.Connected = true
+				alive++
+			}
+			p.LastSeen = time.Now().Unix()
+			// Liveness updates go to the in-memory node table only.
+			// Writing Connected/LastSeen to CRDT on every tick was the
+			// main source of DAG bloat (~12k writes/day), causing fresh
+			// nodes to spend minutes walking history before they could
+			// discover peers. Structural changes (join, leave, service
+			// registration) still go through CRDT.
+			value, err := json.Marshal(p)
+			if err == nil {
+				UpdateNodeTableHook(ds.NewKey(peer_id.String()), value)
+			} else {
+				common.Logger.Error("Error while marshalling peer: ", peer_id.String(), err)
 			}
 		}
 		if !process.HealthCheck() {
 			common.Logger.Error("Health check failed")
-			// exit myself
 			os.Exit(1)
 		}
-		common.Logger.Debugf("Verification Summary: %d un-reachable peers, %d re-connected peers", disconnected, reconnected)
+		common.Logger.Debugf("Verification Summary: %d alive peers, %d unreachable peers", alive, disconnected)
 	})
 	common.ReportError(err, "Error while creating verification ticker")
 
-	// Add resource monitoring every 2 minutes
+	// Periodic maintenance: stale peer cleanup and resource monitoring.
 	err = gocron.Every(2).Minutes().Do(func() {
 		GetResourceManagerStats()
 
-		// Also log current connection count for easy monitoring
 		connectedPeers := ConnectedPeers()
 		allPeers := AllPeers()
 		common.Logger.Debugf("Connection Summary: %d connected peers, %d total known peers",
 			len(connectedPeers), len(allPeers))
 
-		// Log if we have very few connections (potential issue)
 		if len(connectedPeers) == 0 {
 			common.Logger.Warnf("Low connection count detected: only %d connected peers", len(connectedPeers))
 			Reconnect()
 		}
 
-		// Always re-announce services so that after DAG sync the
-		// service data gets a high enough CRDT priority to propagate.
-		// Without this, a fresh node's initial low-priority Put is
-		// never superseded once the DAG catches up.
-		ReannounceLocalServices()
-
-		// Cleanup: remove peers that have been disconnected for a long time
-		// Define staleness threshold
+		// Cleanup: remove peers that have been disconnected for a long time.
+		// Skip peers with registered services — they're actively providing
+		// workloads and may be reachable through a relay even if we can't
+		// ping them directly.
 		staleAfter := 10 * time.Minute
 		table := *GetAllPeers()
 		now := time.Now().Unix()
 		for id, p := range table {
-			if !p.Connected && p.LastSeen > 0 {
+			hasServices := len(p.Service) > 0
+			if !p.Connected && p.LastSeen > 0 && !hasServices {
 				if time.Unix(p.LastSeen, 0).Add(staleAfter).Before(time.Now()) {
 					common.Logger.Warnf("Removing stale peer %s (last seen %v)", id, time.Unix(p.LastSeen, 0))
 					DeleteNodeTableHook(ds.NewKey(id))
 				}
 			}
-			// Also mark peers with very old LastSeen as disconnected
-			if p.Connected && p.LastSeen > 0 && time.Unix(p.LastSeen, 0).Add(2*time.Minute).Before(time.Now()) {
+			// Mark peers with very old LastSeen as disconnected (in-memory only).
+			// Skip peers with services — they may be behind a relay.
+			if p.Connected && p.LastSeen > 0 && !hasServices && time.Unix(p.LastSeen, 0).Add(2*time.Minute).Before(time.Now()) {
 				p.Connected = false
 				value, err := json.Marshal(p)
 				if err == nil {
 					UpdateNodeTableHook(ds.NewKey(id), value)
 				}
 			}
-			// If LastSeen is zero, initialize it now
+			// Initialize LastSeen if zero (in-memory only).
 			if p.LastSeen == 0 {
 				p.LastSeen = now
 				value, err := json.Marshal(p)
