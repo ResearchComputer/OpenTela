@@ -446,102 +446,136 @@ func GlobalServiceForwardHandler(c *gin.Context) {
 		}
 	}
 
-	// Select one of the candidates using weighted or uniform random selection.
-	var targetPeer string
-	if viper.GetBool("scalability.weighted_routing") {
-		weighted := scoreCandidates(candidates)
-		targetPeer = weightedRandomSelect(weighted)
-	} else {
-		randomIndex := rand.Intn(len(candidates))
-		targetPeer = candidates[randomIndex]
-	}
+	// --- Retry loop: peer selection + proxy forwarding ---
 
-	// Re-construct body for forwarding since we read it
-	// (Already done above: c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes)))
-	// replace the request path with the _service path
+	maxRetries := 0
+	if viper.GetBool("routing.retry_enabled") {
+		maxRetries = viper.GetInt("routing.max_retries")
+	}
+	maxBuffer := viper.GetInt("routing.max_response_buffer_bytes")
+	excluded := make(map[string]bool)
+
+	// Streaming detection — layer 1: request body "stream":true (OpenAI-compatible)
+	// Layer 2: Accept header. Layer 3 is in retryableResponseWriter.WriteHeader.
+	streamVal, streamType, _, _ := jsonparser.Get(bodyBytes, "stream")
+	isStreaming := (streamType == jsonparser.Boolean && string(streamVal) == "true") ||
+		strings.Contains(c.GetHeader("Accept"), "text/event-stream")
+
 	requestPath = "/v1/_service/" + serviceName + requestPath
-
-	event := []axiom.Event{{ingest.TimestampField: time.Now(), "event": "Service Forward", "from": protocol.MyID, "to": targetPeer, "path": requestPath, "service": serviceName}}
-	IngestEvents(event)
-
-	common.Logger.Debugf("Service forward: peer=%s path=%s", targetPeer, requestPath)
-
-	// Determine how to reach the target peer.
-	// If directly connected, forward via libp2p://<worker>/<path>.
-	// If not, find a relay hop and forward via libp2p://<relay>/v1/p2p/<worker>/<path>.
-	// The relay's P2PForwardHandler will then forward to the worker using its
-	// own direct libp2p connection.
-	var target url.URL
-	if protocol.IsDirectlyConnected(targetPeer) {
-		target = url.URL{
-			Scheme: "libp2p",
-			Host:   targetPeer,
-			Path:   requestPath,
-		}
-	} else {
-		relayPeer := protocol.FindRelayFor(targetPeer)
-		if relayPeer == "" {
-			c.JSON(http.StatusBadGateway, gin.H{"error": "no relay found to reach worker " + targetPeer})
-			return
-		}
-		// Route through relay: relay receives the request and forwards
-		// via its /v1/p2p/<worker> handler to the worker.
-		relayPath := "/v1/p2p/" + targetPeer + requestPath
-		common.Logger.Debugf("Relay hop: relay=%s path=%s", relayPeer[:12], relayPath)
-		target = url.URL{
-			Scheme: "libp2p",
-			Host:   relayPeer,
-			Path:   relayPath,
-		}
-	}
-	// Resolve the end-user's wallet from their bearer token (if auth is
-	// configured) and inject it into the forwarded request so the worker
-	// knows who the original caller is.
 	clientWallet := resolveClientWallet(c)
 
-	director := func(req *http.Request) {
-		req.URL.Scheme = target.Scheme
-		req.URL.Path = target.Path
-		req.URL.Host = req.Host
-		req.Host = target.Host
-		if clientWallet != "" {
-			req.Header.Set("X-Otela-Client-Wallet", clientWallet)
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		remaining := excludePeers(candidates, excluded)
+		if len(remaining) == 0 {
+			break
 		}
-		// Body is already reset on c.Request
-	}
-	proxy := httputil.NewSingleHostReverseProxy(&target)
-	proxy.Director = director
-	proxy.Transport = getGlobalTransport()
-	proxy.ErrorHandler = ErrorHandler
-	proxy.ModifyResponse = func(r *http.Response) error {
-		if err := rewriteHeader()(r); err != nil {
-			return err
-		}
-		r.Header.Set("X-Computing-Node", targetPeer)
 
-		// Extract usage metrics from response if billing enabled
-		if viper.GetBool("billing.enabled") {
-			if metrics, err := usage.ExtractUsageMetrics(r); err == nil && len(metrics) > 0 {
-				for metricName, value := range metrics {
-					if err := usage.Track(requestID, serviceName, protocol.MyID, targetPeer, metricName, value); err != nil {
-						common.Logger.Errorf("Tracking usage: %v", err)
-					}
+		// Select peer
+		var targetPeer string
+		if viper.GetBool("scalability.weighted_routing") {
+			weighted := scoreCandidates(remaining)
+			targetPeer = weightedRandomSelect(weighted)
+		} else {
+			targetPeer = remaining[rand.Intn(len(remaining))]
+		}
+		excluded[targetPeer] = true
+
+		// Clone request — ReverseProxy mutates URL, Host, X-Forwarded-*
+		attemptReq := c.Request.Clone(ctx)
+		attemptReq.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		attemptReq.Header.Set("X-Otela-Request-Id", requestID)
+
+		event := []axiom.Event{{ingest.TimestampField: time.Now(), "event": "Service Forward", "from": protocol.MyID, "to": targetPeer, "path": requestPath, "service": serviceName}}
+		IngestEvents(event)
+		common.Logger.Debugf("Service forward: attempt=%d peer=%s path=%s", attempt+1, targetPeer, requestPath)
+
+		// Resolve target URL (direct or via relay)
+		var target url.URL
+		if protocol.IsDirectlyConnected(targetPeer) {
+			target = url.URL{Scheme: "libp2p", Host: targetPeer, Path: requestPath}
+		} else {
+			relayPeer := protocol.FindRelayFor(targetPeer)
+			if relayPeer == "" {
+				common.Logger.Warnf("No relay for peer %s, skipping", targetPeer)
+				if attempt <= maxRetries {
+					routingRetriesTotal.WithLabelValues(serviceName, strconv.Itoa(attempt+1)).Inc()
 				}
+				continue
+			}
+			relayPath := "/v1/p2p/" + targetPeer + requestPath
+			common.Logger.Debugf("Relay hop: relay=%s path=%s", relayPeer[:12], relayPath)
+			target = url.URL{Scheme: "libp2p", Host: relayPeer, Path: relayPath}
+		}
+
+		rw := newRetryableResponseWriter(c.Writer, isStreaming, maxBuffer)
+
+		director := func(req *http.Request) {
+			req.URL.Scheme = target.Scheme
+			req.URL.Path = target.Path
+			req.URL.Host = req.Host
+			req.Host = target.Host
+			if clientWallet != "" {
+				req.Header.Set("X-Otela-Client-Wallet", clientWallet)
 			}
 		}
 
-		return nil
+		proxy := httputil.NewSingleHostReverseProxy(&target)
+		proxy.Director = director
+		proxy.Transport = getGlobalTransport()
+		proxy.ErrorHandler = func(res http.ResponseWriter, req *http.Request, err error) {
+			if rrw, ok := res.(*retryableResponseWriter); ok {
+				common.Logger.Warnf("Transport error for peer %s: %v", targetPeer, err)
+				rrw.markFailed()
+				return
+			}
+			if _, werr := fmt.Fprintf(res, "ERROR: %s", err.Error()); werr != nil {
+				common.Logger.Error("Error writing error response: ", werr)
+			}
+		}
+
+		capturedPeer := targetPeer
+		proxy.ModifyResponse = func(r *http.Response) error {
+			if err := rewriteHeader()(r); err != nil {
+				return err
+			}
+			r.Header.Set("X-Computing-Node", capturedPeer)
+			if viper.GetBool("billing.enabled") {
+				if metrics, err := usage.ExtractUsageMetrics(r); err == nil && len(metrics) > 0 {
+					for metricName, value := range metrics {
+						if err := usage.Track(requestID, serviceName, protocol.MyID, capturedPeer, metricName, value); err != nil {
+							common.Logger.Errorf("Tracking usage: %v", err)
+						}
+					}
+				}
+			}
+			return nil
+		}
+
+		proxy.ServeHTTP(rw, attemptReq)
+
+		if rw.isRetryable() {
+			routingRetriesTotal.WithLabelValues(serviceName, strconv.Itoa(attempt+1)).Inc()
+			common.Logger.Warnf("Attempt %d/%d failed for peer %s, retrying",
+				attempt+1, maxRetries+1, targetPeer)
+			continue
+		}
+
+		// Success (or streaming already committed to client)
+		if !rw.headersSent {
+			rw.flushToClient()
+		}
+		if attempt > 0 {
+			routingRetriesTotal.WithLabelValues(serviceName, "succeeded_after_retry").Inc()
+		}
+		status := strconv.Itoa(c.Writer.Status())
+		routingRequestsTotal.WithLabelValues(serviceName, status).Inc()
+		routingRequestDuration.WithLabelValues(serviceName).Observe(time.Since(routingStart).Seconds())
+		return
 	}
 
-	// Wrap the response writer to handle streaming properly
-	streamWriter := &StreamAwareResponseWriter{
-		ResponseWriter: c.Writer,
-		flusher:        c.Writer.(http.Flusher),
-	}
-
-	proxy.ServeHTTP(streamWriter, c.Request)
-
-	status := strconv.Itoa(c.Writer.Status())
-	routingRequestsTotal.WithLabelValues(serviceName, status).Inc()
+	// All attempts exhausted (or no candidates left)
+	routingRetriesTotal.WithLabelValues(serviceName, "exhausted").Inc()
+	routingRequestsTotal.WithLabelValues(serviceName, "502").Inc()
 	routingRequestDuration.WithLabelValues(serviceName).Observe(time.Since(routingStart).Seconds())
+	c.JSON(http.StatusBadGateway, gin.H{"error": "all workers unreachable for service " + serviceName})
 }
