@@ -53,10 +53,17 @@ var (
 		},
 		[]string{"service", "level"},
 	)
+	routingRetriesTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "otela_routing_retries_total",
+			Help: "Retry outcomes during request forwarding",
+		},
+		[]string{"service", "outcome"},
+	)
 )
 
 func init() {
-	prometheus.MustRegister(routingRequestsTotal, routingRequestDuration, routingFallbackTotal)
+	prometheus.MustRegister(routingRequestsTotal, routingRequestDuration, routingFallbackTotal, routingRetriesTotal)
 }
 
 func getGlobalTransport() *http.Transport {
