@@ -75,6 +75,7 @@ Nodes form a P2P mesh using libp2p. A **head node (dispatcher)** receives client
 - **Gossip protocol**: libp2p PubSub for broadcasting, Kademlia DHT for peer discovery, 20s ping interval.
 - **Config**: Viper with YAML config at `~/.config/opentela/cfg.yaml` (migrates from legacy `~/.config/ocf/`), env vars prefixed `OF_`.
 - **Feature flags**: Opt-in scalability features in config — `scalability.swim_enabled`, `scalability.crdt_tuned`, `scalability.weighted_routing`, etc. All disabled by default.
+- **Request retry**: On transport failure, the head node retries against a different worker (up to `routing.max_retries`, default 3). Non-streaming responses are fully buffered for transparent retry; streaming (SSE) requests are retryable only before the first 2xx is committed to the client. Controlled by `routing.retry_enabled` (default true).
 - **Build attestation**: When `security.require_signed_binary=true`, nodes reject peers running unsigned binaries. Disabled by default for development.
 
 ## Deployment
