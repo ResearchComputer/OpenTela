@@ -127,6 +127,11 @@ func initConfig(cmd *cobra.Command) error {
 	viper.SetDefault("scalability.admission_control", false)
 	viper.SetDefault("scalability.expected_workers", 0) // 0 = auto (disabled)
 
+	// Request retry/re-route on transport failure (enabled by default)
+	viper.SetDefault("routing.retry_enabled", true)
+	viper.SetDefault("routing.max_retries", 3)
+	viper.SetDefault("routing.max_response_buffer_bytes", 64*1024*1024) // 64MB
+
 	// CRDT tuned values (used when scalability.crdt_tuned=true)
 	viper.SetDefault("crdt.tuned_gossipsub_d", 10)
 	viper.SetDefault("crdt.tuned_gossipsub_dlo", 4)
