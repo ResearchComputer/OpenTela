@@ -367,37 +367,31 @@ func GlobalServiceForwardHandler(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Minute)
 	defer cancel()
 
-	// If the caller provides X-Otela-Identity-Group, we can skip parsing the
-	// request body for routing purposes and forward it verbatim. When the
-	// header is absent we fall through to the body-parse path so that
-	// selectCandidates can extract the identity group from the JSON body.
-	identityGroupHeader := c.GetHeader("X-Otela-Identity-Group")
+	// Always buffer the request body so transport-level failures can retry
+	// against a different worker. The retry loop replays bodyBytes on each
+	// attempt.
+	bodyBytes, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.Request = c.Request.WithContext(ctx)
 
-	var bodyBytes []byte
-	if identityGroupHeader != "" {
-		// Build a synthetic JSON body from the header for selectCandidates matching.
-		// The header format is "key=value" (e.g. "model=Qwen3-8B"). selectCandidates
-		// parses the body for the identity group key, so we construct {"key":"value"}.
+	// matchBody is used *only* by selectCandidates to pick the identity group.
+	// If the caller provides X-Otela-Identity-Group we synthesize a tiny JSON
+	// object ({"key":"value"}) so the matcher works unchanged, without needing
+	// to parse the real body for routing. The actual body forwarded to the
+	// worker is always bodyBytes.
+	matchBody := bodyBytes
+	if identityGroupHeader := c.GetHeader("X-Otela-Identity-Group"); identityGroupHeader != "" {
 		parts := strings.SplitN(identityGroupHeader, "=", 2)
 		if len(parts) == 2 {
 			obj := map[string]string{parts[0]: parts[1]}
 			if b, err := json.Marshal(obj); err == nil {
-				bodyBytes = b
+				matchBody = b
 			}
 		}
-		// Body is left untouched for forwarding (reverse proxy streams from c.Request.Body).
-	} else {
-		// Create a copy of the request body to preserve it for streaming
-		// We MUST read body here to inspect IdentityGroup
-		var err error
-		bodyBytes, err = io.ReadAll(c.Request.Body)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 	}
-	c.Request = c.Request.WithContext(ctx)
 
 	serviceName := c.Param("service")
 	routingStart := time.Now()
@@ -414,7 +408,7 @@ func GlobalServiceForwardHandler(c *gin.Context) {
 	// 2: allow wildcard + catch-all fallback
 	fallbackLevel := parseFallbackLevel(c.GetHeader("X-Otela-Fallback"))
 
-	candidates := selectCandidates(providers, serviceName, bodyBytes, fallbackLevel)
+	candidates := selectCandidates(providers, serviceName, matchBody, fallbackLevel)
 	routingFallbackTotal.WithLabelValues(serviceName, strconv.Itoa(fallbackLevel)).Inc()
 	if len(candidates) == 0 {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "No provider found for the requested service."})
