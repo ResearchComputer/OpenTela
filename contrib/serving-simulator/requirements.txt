@@ -1,0 +1,7 @@
+nvidia-ml-py
+requests
+paramiko
+pyyaml
+transformers
+aiohttp
+humanize

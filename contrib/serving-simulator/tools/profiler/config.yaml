@@ -1,0 +1,32 @@
+backend_servers: []
+server_discovery:
+  enabled: true
+  port: 8088
+  servers:
+  - hostname: nid006765
+    models:
+    - meta-llama/Meta-Llama-3.1-8B-Instruct
+  - hostname: nid007361
+    models:
+    - meta-llama/Meta-Llama-3.1-8B-Instruct
+  - hostname: nid007515
+    models:
+    - meta-llama/Meta-Llama-3.1-8B-Instruct
+scheduler_type: round_robin
+host: 0.0.0.0
+port: 8000
+health_check:
+  enabled: true
+  interval_seconds: 30
+  timeout_seconds: 5
+  endpoint: /health
+request_timeout: 300
+nodes:
+- id: QmWTHfLyCyhNZNe926iufp2mJZZA2soMcv5p3GiLk2pz2u
+  models:
+  - Qwen/Qwen2.5-7B-Instruct
+  hardware:
+    gpu_type: a100
+    gpu_name: NVIDIA A100-SXM4-80GB
+    gpu_count: 4
+    total_memory_mb: 81920
