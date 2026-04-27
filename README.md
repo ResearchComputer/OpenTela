@@ -9,7 +9,7 @@ Tela is the latin word for "Fabric", which refers to the interconnected network 
 
 ## Latest Updates
 
-*   **[2026/02]** 💡 **How SwissAI Leverages OpenTela**: We wrote a case study on how SwissAI uses OpenTela to orchestrate their distributed GPU nodes for scalable model serving. [Read more]((docs/posts/swissai.md).
+*   **[2026/02]** 💡 **How SwissAI Leverages OpenTela**: We wrote a case study on how SwissAI uses OpenTela to orchestrate their distributed GPU nodes for scalable model serving. [Read more](docs/posts/swissai.md).
 
 ## Features
 
