@@ -9,7 +9,7 @@ Tela is the latin word for "Fabric", which refers to the interconnected network 
 
 ## Latest Updates
 
-*   **[2026/02]** 💡 **How SwissAI Leverages OpenTela**: We wrote a case study on how SwissAI uses OpenTela to orchestrate their distributed GPU nodes for scalable model serving. [Read more](docs/posts/swissai.md).
+*   **[2026/02]** 💡 **How SwissAI Leverages OpenTela**: We wrote a case study on how SwissAI uses OpenTela to orchestrate their distributed GPU nodes for scalable model serving. [Read more]((docs/posts/swissai.md).
 
 ## Features
 
@@ -25,10 +25,24 @@ Tela is the latin word for "Fabric", which refers to the interconnected network 
 
 ## Documentation
 
-- [Installation](docs/tutorial/installation.md)
-- [Spin Up a network](docs/tutorial/spinup.md)
-- [How requests are routed](docs/tutorial/routing.md)
-- [Glossary](docs/tutorial/glossary.md)
+### Getting Started
+- [Installation](docs/tutorial/installation) — Download and install OpenTela
+- [Spin Up LLM Serving](docs/tutorial/spinup) — Set up multi-LLM serving cluster
+- [Request Routing](docs/tutorial/routing) — Understand how requests are routed
+- [Wallet & Ownership](docs/tutorial/owner) — Manage Solana wallets and node identity
+- [Solana Settlement](docs/tutorial/settlement) — Configure automated usage billing
+- [Docker Serving](docs/tutorial/docker-serving) — Use Docker containers for LLM serving
+- [Glossary](docs/tutorial/glossary) — Key terms and concepts
+
+### Advanced Topics
+- [CRDT Internals](docs/advanced/crdt-internals) — How CRDT synchronization works
+- [CRDT Tombstones](docs/advanced/crdt-tombstones) — Node departure handling
+- [Security Hardening](docs/advanced/security) — Build attestation, trust, and access control
+- [Performance Benchmark](docs/advanced/performance-optimization) — Proxy latency measurements
+- [Large-Scale Simulation](docs/advanced/benchmark) — Run 100+ node simulations
+
+### Extensions
+- [Fleet Manager](docs/extensions/fleet-manager) — Deploy to SLURM clusters with otela-fleet
 
 ## Contributing
 

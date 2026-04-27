@@ -1,3 +1,8 @@
+---
+title: Fleet Manager
+description: Launch, inspect, and reconcile serving workloads across SLURM-backed clusters with otela-fleet.
+---
+
 # Fleet Manager
 
 The OpenTela fleet manager helps you launch, inspect, and reconcile serving
