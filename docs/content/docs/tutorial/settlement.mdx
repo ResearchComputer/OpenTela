@@ -1,6 +1,7 @@
 ---
 title: Solana Settlement
 description: Configure and operate automated usage billing and SPL token settlement between consumers and providers.
+experimental: true
 ---
 
 OpenTela can automatically settle usage bills between consumers and providers using the **OTELA** SPL token on Solana. When a head node dispatches requests to worker nodes, both sides independently track usage metrics (tokens generated, GPU milliseconds consumed, etc.). Once usage crosses a configurable threshold, the head node reconciles the measurements, calculates the amount owed, and submits an SPL token transfer on-chain.

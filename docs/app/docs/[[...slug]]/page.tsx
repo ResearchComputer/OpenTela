@@ -23,6 +23,30 @@ export default async function Page(props: {
   return (
     <DocsPage toc={data.toc} full={data.full}>
       <DocsTitle>{page.data.title}</DocsTitle>
+      {data.experimental && (
+        <div className="mt-2 mb-1">
+          <span
+            role="status"
+            className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-300"
+          >
+            <svg
+              aria-hidden="true"
+              viewBox="0 0 24 24"
+              className="size-3.5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M12 9v4" />
+              <path d="M12 17h.01" />
+              <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" />
+            </svg>
+            Experimental
+          </span>
+        </div>
+      )}
       <DocsDescription>{page.data.description}</DocsDescription>
       <DocsBody>
         <MDX components={{ ...defaultMdxComponents }} />
