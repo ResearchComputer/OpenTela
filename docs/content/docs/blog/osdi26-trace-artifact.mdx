@@ -1,0 +1,61 @@
+---
+title: Reproducing the Trace Analysis Figures from our OSDI '26 Paper
+description: Artifact guide for the trace-analysis figures in our OSDI '26 paper — where to find the SwissAI serving trace, and how to regenerate the plots from the OpenTela repository.
+---
+
+Alongside our OSDI '26 paper, we are releasing the production serving trace collected from the SwissAI inference platform together with the analysis code used to produce the trace-characterization figures.
+
+## The trace
+
+The dataset is published on the Hugging Face Hub:
+
+- **Dataset**: [`eth-easl/swissai-serving-trace`](https://huggingface.co/datasets/eth-easl/swissai-serving-trace)
+
+It contains the per-request log used in the paper (`trace.jsonl`) and the per-model KV-cache bucket reuse logs that drive the reuse-lifecycle figures (`qwen3-32b-bucket-reuse.jsonl`, `qwen380b_thinking_bucket-reuse.jsonl`, `qwen380b_instruct_bucket-reuse.jsonl`, `llama3-70b_bucket-reuse.jsonl`, `apertus-70b-bucket-reuse.jsonl`, and `qwen3-32b-buckets.jsonl`). The notebooks pull only the files they need via `huggingface_hub.snapshot_download`, so you do not need to clone the full dataset by hand.
+
+## Reproducing the figures
+
+The analysis code lives in [`contrib/trace_analysis/`](https://github.com/swiss-ai/OpenTela/tree/main/contrib/trace_analysis) of the OpenTela repository. Two notebooks are provided:
+
+- `plot_all.ipynb` — request-level latency distributions, per-model token usage, and the model-burstiness / lifecycle figures.
+- `plot_bucket.ipynb` — KV-cache bucket reuse over the model lifecycle for Qwen3-32B, Qwen3-80B (Instruct and Thinking), Llama-3-70B, and Apertus-70B.
+
+Shared plotting style lives in `plot_utils.py`, and the rendered PDFs land in `contrib/trace_analysis/figures/`.
+
+### Steps
+
+1. Clone the repository and `cd` into the analysis directory:
+
+   ```bash
+   git clone https://github.com/swiss-ai/OpenTela.git
+   cd OpenTela/contrib/trace_analysis
+   ```
+
+2. Install the Python dependencies. The notebooks rely on `pandas`, `numpy`, `scipy`, `matplotlib`, `seaborn`, and `huggingface_hub`:
+
+   ```bash
+   python -m venv .venv && source .venv/bin/activate
+   pip install pandas numpy scipy matplotlib seaborn huggingface_hub jupyter
+   ```
+
+3. (Optional) If the dataset becomes gated, log in to Hugging Face once so `snapshot_download` can authenticate:
+
+   ```bash
+   huggingface-cli login
+   ```
+
+4. Run the notebooks. Either open them in Jupyter, or execute non-interactively:
+
+   ```bash
+   jupyter nbconvert --to notebook --execute plot_all.ipynb    --output plot_all.executed.ipynb
+   jupyter nbconvert --to notebook --execute plot_bucket.ipynb --output plot_bucket.executed.ipynb
+   ```
+
+   The first run downloads the relevant `.jsonl` files from the Hugging Face dataset into the local `huggingface_hub` cache; subsequent runs reuse the cache.
+
+5. Inspect the generated figures under `contrib/trace_analysis/figures/`. You should obtain the same PDFs that appear in the paper, including `latency_distribution_e2e.pdf`, `model_token_usage_top20_single.pdf`, `model_burstiness_lifecycle.pdf`, and the `*_output_share_*.pdf` / `reuse_lifecycle_comparison.pdf` plots from the bucket notebook.
+
+### Notes
+
+- The notebooks filter the trace to completed requests (`status == 'DEFAULT'` with valid `created_at` / `finished_at`) and clip the long tail (`latency_s <= 1000`) before computing distributions.
+- A small helper, `trim_output.py`, is included for keeping notebook outputs reasonably sized when committing changes back to the repository; it is not required to reproduce the figures.

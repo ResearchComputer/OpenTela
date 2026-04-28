@@ -1,12 +1,7 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-python3 - "$@" <<'PY'
 import argparse
 import json
 import sys
 from pathlib import Path
-
 
 TEXT_MIME_TYPES = {
     "text/plain",
@@ -254,7 +249,5 @@ def main():
         return 1
     return 0
 
-
 if __name__ == "__main__":
     raise SystemExit(main())
-PY

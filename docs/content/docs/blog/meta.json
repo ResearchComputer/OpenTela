@@ -1,6 +1,7 @@
 {
   "title": "Blog",
   "pages": [
-    "swissai"
+    "swissai",
+    "osdi26-trace-artifact"
   ]
 }
