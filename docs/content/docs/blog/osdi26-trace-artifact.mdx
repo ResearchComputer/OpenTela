@@ -123,3 +123,36 @@ Shared plotting style lives in `plot_utils.py`, and the rendered PDFs land in `c
 
 - The notebooks filter the trace to completed requests (`status == 'DEFAULT'` with valid `created_at` / `finished_at`) and clip the long tail (`latency_s <= 1000`) before computing distributions.
 - A small helper, `trim_output.py`, is included for keeping notebook outputs reasonably sized when committing changes back to the repository; it is not required to reproduce the figures.
+
+## Running System Performance Analysis
+
+We also provide scripts for analyzing the resilience and performance of the OpenTela system under different conditions. These scripts can be found in the `contrib/benchmark/` directory. These script are designed to run workloads on the shared HPC cluster, but can be adapted to run on any OpenTela deployment.
+
+1. To run the experiment on resilience to node failures, use the following command:
+
+```bash
+python simulator/real/run_recovery.py --config meta/experiments/1_recovery/recovery.yaml --output .local/output/70b_recovery.jsonl
+```
+
+2. To run the experiment on performance under load, use the following command:
+
+```bash
+bash contrib/benchmark/experiments/scripts/bench_all.sh
+```
+
+or to run a specific workload:
+
+```bash
+cd contrib/benchmark/experiments/scripts
+# Spin up the cluster with the desired configuration
+python cli/spinup.py --config meta/experiments/2_placement/70b_gh200.yaml
+# Run the workloads
+python cli/run_workloads.py --config meta/experiments/2_placement/70b_gh200.yaml --output-file .local/output/70b_gh200.jsonl
+# Cancel all jobs after the experiment is done
+python cli/cancel_all.py
+```
+
+### Notes
+
+- The `spinup.py` script uses a Jinja2 template to generate the OpenTela configuration for the cluster. You may need to modify the `spinup_workload.py` script to set the correct paths for the OCF binary and environment file based on your setup. We only tested it with the specific setup on our HPC cluster, so adjustments may be necessary for other environments.
+- The workloads are designed to run for a fixed duration (e.g., 30 minutes) and generate load on the cluster. You can adjust the workload configurations in the `meta/experiments/` directory to test different scenarios or models.

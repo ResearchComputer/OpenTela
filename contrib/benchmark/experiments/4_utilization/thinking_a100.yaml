@@ -1,0 +1,7 @@
+placement:
+  - model: Qwen/Qwen3-Next-80B-A3B-Thinking
+    tensor-parallel-size: 4
+    gpus: NVDA:A100_80G:SXM
+    count: 1
+    weight: 1
+    gpu-memory-utilization: 0.8

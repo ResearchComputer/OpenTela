@@ -1,0 +1,38 @@
+placement:
+  - model: meta-llama/Llama-2-13b-hf
+    tensor-parallel-size: 1
+    gpus: NVDA:A100_80G:SXM
+    count: 4
+    weight: 1
+  - model: meta-llama/CodeLlama-34b-hf
+    tensor-parallel-size: 2
+    gpus: NVDA:A100_80G:SXM
+    count: 8
+    weight: 1
+  - model: meta-llama/Llama-3.3-70B-Instruct
+    tensor-parallel-size: 4
+    gpus: NVDA:A100_80G:SXM
+    count: 1
+    weight: 0.11
+  - model: meta-llama/Llama-3.3-70B-Instruct
+    tensor-parallel-size: 4
+    gpus: NVDA:GH200
+    count: 8
+    weight: 0.89
+
+workload:
+  - model: meta-llama/Llama-2-13b-hf
+    arrival_rate: Poisson(110)
+    duration: 300
+    input: Normal(599, 822)
+    output: Normal(74, 211)
+  # - model: meta-llama/CodeLlama-34b-hf
+  #   arrival_rate: Poisson(185.5)
+  #   duration: 300
+  #   input: Normal(1169, 1276)
+  #   output: Normal(532, 435)
+  # - model: meta-llama/Llama-3.3-70B-Instruct
+  #   arrival_rate: Poisson(221)
+  #   duration: 300
+  #   input: Normal(727, 777)
+  #   output: Normal(64, 190)

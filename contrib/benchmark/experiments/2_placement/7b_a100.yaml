@@ -1,0 +1,15 @@
+nodes:
+  - gpu: NVDA:A100_80G:SXM
+    count: 1
+    gpus_per_node: 1
+    cost: 10.97  # p5.48xlarge
+placement_strategy: "maximize_replicas"
+placement_config:
+  memory_threshold: 0.75
+workload:
+  - model: meta-llama/Llama-2-7b-hf
+    arrival_rate: Poisson(13)
+    duration: 300
+    input: Normal(764, 561)
+    output: Normal(674, 412)
+    tensor-parallel-size: 1

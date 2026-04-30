@@ -1,0 +1,15 @@
+nodes:
+  - gpu: NVDA:GH200
+    count: 1
+    gpus_per_node: 1
+    cost: 27.52  # p5.48xlarge
+placement_strategy: "maximize_replicas"
+placement_config:
+  memory_threshold: 0.75
+workload:
+  - model: meta-llama/Meta-Llama-3-8B
+    arrival_rate: Poisson(13)
+    duration: 300
+    input: Normal(764, 561)
+    output: Normal(674, 412)
+    tensor-parallel-size: 1

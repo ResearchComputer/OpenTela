@@ -1,0 +1,58 @@
+#!/bin/bash
+#SBATCH --job-name={{ job_name }}
+#SBATCH --nodes={{ total_nodes }}
+#SBATCH --time={{ time }}
+#SBATCH --output=/capstor/store/cscs/swissai/infra02/xyao/rcc/logs/%x-%j.out
+#SBATCH --account=a-infra02
+#SBATCH --environment={{ env_file }}
+
+set -e
+
+# Helper script for vLLM
+cat << 'EOF' > run_vllm_helper.sh
+#!/bin/bash
+MODEL=$1
+TP_SIZE=$2
+
+# Calculate CUDA_VISIBLE_DEVICES based on SLURM_LOCALID
+# SLURM_LOCALID is the task ID within the node (0, 1, ...)
+START_GPU=$((SLURM_LOCALID * TP_SIZE))
+END_GPU=$((START_GPU + TP_SIZE - 1))
+
+# Construct device string (e.g. 0,1)
+DEVICES=""
+for ((i=START_GPU; i<=END_GPU; i++)); do
+  if [ -n "$DEVICES" ]; then DEVICES="$DEVICES,"; fi
+  DEVICES="$DEVICES$i"
+done
+
+export CUDA_VISIBLE_DEVICES=$DEVICES
+echo "Starting vLLM for $MODEL on $(hostname) task $SLURM_LOCALID GPUs $DEVICES"
+
+# Wrapped command
+# Port needs to be unique per task if they share network namespace
+PORT=$((8000 + SLURM_LOCALID))
+
+VLLM_CMD="vllm serve $MODEL --tensor-parallel-size $TP_SIZE --port $PORT --no-enable-chunked-prefill --no-enable-prefix-caching --disable-cascade-attn --async-scheduling{% if gpu_memory_utilization %} --gpu-memory-utilization {{ gpu_memory_utilization }}{% endif %}"
+
+CUDA_VISIBLE_DEVICES=$DEVICES {{ ocf_binary }} start \
+  --bootstrap.addr {{ bootstrap_addr }} \
+  --subprocess "$VLLM_CMD" \
+  --service.name llm \
+  --service.port $PORT &
+
+wait
+EOF
+chmod +x run_vllm_helper.sh
+
+echo "Launching tasks..."
+
+# Model: {{ model }}
+# We run 'count' tasks in total, distributed across 'total_nodes'
+srun --environment {{ env_file }} --account=a-infra02 \
+     --nodes={{ total_nodes }} \
+     --ntasks={{ count }} \
+     --ntasks-per-node={{ tasks_per_node }} \
+     ./run_vllm_helper.sh {{ model }} {{ tp_size }} &
+
+wait
