@@ -44,6 +44,9 @@ Tela is the latin word for "Fabric", which refers to the interconnected network 
 ### Extensions
 - [Fleet Manager](docs/extensions/fleet-manager) — Deploy to SLURM clusters with otela-fleet
 
+### Others
+- [Artifact Guide for OSDI '26 Operational Systems](docs/blog/osdi26-trace-artifact) — Access the SwissAI serving trace and reproduce the figures from our OSDI '26 paper.
+
 ## Contributing
 
 Contributions are welcome! Please follow the code of conduct and submit pull requests for any enhancements or bug fixes.
