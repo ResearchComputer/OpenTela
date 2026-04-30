@@ -8,7 +8,8 @@ Tela is the latin word for "Fabric", which refers to the interconnected network 
 
 ## Latest Updates
 
-*   **[2026/02]** 💡 **How SwissAI Leverages OpenTela**: We wrote a case study on how SwissAI uses OpenTela to orchestrate their distributed GPU nodes for scalable model serving. [Read more](docs/posts/swissai.md).
+* **[2026/04]** 🚀 **SwissAI Model Launch Toolkit**: For users with access to Alps HPC, you can now use the dedicated `sml` (SwissAI Model Launch) CLI tool to easily deploy your models and connect to the [SwissAI Research Platform](https://serving.swissai.svc.cscs.ch/) through OpenTela. Check out the [documentation](https://github.com/swiss-ai/model-launch) for details.
+* **[2026/02]** 💡 **How SwissAI Leverages OpenTela**: We wrote a case study on how SwissAI uses OpenTela to orchestrate their distributed GPU nodes for scalable model serving. [Read more](docs/posts/swissai.md).
 
 ## Features
 

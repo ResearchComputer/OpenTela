@@ -79,7 +79,7 @@ It contains the per-request log used in the paper (`trace.jsonl`) and the per-mo
 
 ## Reproducing the figures
 
-The analysis code lives in [`contrib/trace_analysis/`](https://github.com/swiss-ai/OpenTela/tree/main/contrib/trace_analysis) of the OpenTela repository. Two notebooks are provided:
+The analysis code lives in [`contrib/trace_analysis/`](https://github.com/eth-easl/OpenTela/tree/main/contrib/trace_analysis) of the OpenTela repository. Two notebooks are provided:
 
 - `plot_all.ipynb` — request-level latency distributions, per-model token usage, and the model-burstiness / lifecycle figures.
 - `plot_bucket.ipynb` — KV-cache bucket reuse over the model lifecycle for Qwen3-32B, Qwen3-80B (Instruct and Thinking), Llama-3-70B, and Apertus-70B.
@@ -91,7 +91,7 @@ Shared plotting style lives in `plot_utils.py`, and the rendered PDFs land in `c
 1. Clone the repository and `cd` into the analysis directory:
 
    ```bash
-   git clone https://github.com/swiss-ai/OpenTela.git
+   git clone https://github.com/eth-easl/OpenTela.git
    cd OpenTela/contrib/trace_analysis
    ```
 
